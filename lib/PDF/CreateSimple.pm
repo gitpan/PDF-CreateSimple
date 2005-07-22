@@ -7,7 +7,7 @@ use PDF::API2;
 
 use 5.008002;
 
-our $VERSION = '1.0.0.0';
+our $VERSION = '1.0.0.2';
 
 use constant PI => 4 * atan2(1, 1);
 
@@ -54,6 +54,7 @@ sub setFilePath{
 
 sub getFilePath{
     my $self = shift;
+    return $self->{_file_path};
 }
 
 sub addNewPage{
@@ -557,7 +558,7 @@ sub _getImageObject{
     }
     else
     {
-        throw Error::Simple('Unknown image Type');   
+        return $PDF->image_gd($imagePath) ;
     }
 }
 
