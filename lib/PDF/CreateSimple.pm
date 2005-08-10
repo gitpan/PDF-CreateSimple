@@ -7,12 +7,12 @@ use PDF::API2;
 
 use 5.008002;
 
-our $VERSION = '1.0.0.7';
+our $VERSION = '1.0.0.9';
 
 use constant PI => 4 * atan2(1, 1);
 
 sub new{
-    my ($class,$filePath,$templateFile) = @_;
+    my ($class,$filePath,$templateFile,$firstPageFormat) = @_;
     my $self = {};
     $self = bless($self, $class);
 
@@ -23,7 +23,8 @@ sub new{
     }
     else{
         $PDF = PDF::API2->new(-file => $filePath);
-        $PDF->page;
+        my $page = $PDF->page;
+        $page->mediabox($firstPageFormat) if $firstPageFormat;
         $self->_setCurPage(1);
         
     }
@@ -58,7 +59,7 @@ sub getFilePath{
 }
 
 sub addNewPage{
-    my ($self,$pageNo) = @_;  
+    my ($self,$format,$pageNo) = @_;  
     $pageNo = 0 unless $pageNo;
     my $PDF = $self->getPDF();
     
@@ -66,7 +67,9 @@ sub addNewPage{
         if $pageNo > $PDF->pages ||
            $pageNo < 0;
     
-    $PDF->page($pageNo);
+    my $page = $PDF->page($pageNo);
+    $page->mediabox($format) if $format;
+    
     $self->_setCurPage($pageNo);
     
     return $pageNo;
@@ -538,8 +541,9 @@ sub drawImage{
 
 #INTERNAL FUNCTION, do not use outside scope
 sub _getImageObject{
-    my ($self,$imagePath,$ext) = @_;   
+    my ($self,$imagePath,$ext) = @_;
     
+    $ext = '' unless defined($ext);
     my $PDF = $self->getPDF;
     if ($ext && $ext eq 'tiff'){
         return $PDF->image_tiff($imagePath);
@@ -590,15 +594,15 @@ sub drawText{
     my $rotation = $self->_getRotation || 0 ;
     if ($align == 1){
 #         $gfx->text_center($text); # centered
-        $gfx->textlabel($x,$y,$fontObj,$fontSize,$text,-color=>$color,-center=>1, -rotate=> $rotation);
+        return $gfx->textlabel($x,$y,$fontObj,$fontSize,$text,-color=>$color,-center=>1, -rotate=> $rotation);
     }
     elsif($align == 2){
 #         $gfx->text_right($text);  #right aligned
-        $gfx->textlabel($x,$y,$fontObj,$fontSize,$text,-color=>$color,-right=>1, -rotate=> $rotation);
+        return $gfx->textlabel($x,$y,$fontObj,$fontSize,$text,-color=>$color,-right=>1, -rotate=> $rotation);
     }
     else{
 #         $gfx->text($text); # left aligned
-        $gfx->textlabel($x,$y,$fontObj,$fontSize,$text,-color=>$color, -rotate=> $rotation);
+        return $gfx->textlabel($x,$y,$fontObj,$fontSize,$text,-color=>$color, -rotate=> $rotation);
     }
 #     $self->_resetTransformation($gfx,$x,$y);
  
@@ -707,6 +711,7 @@ Draw the text 'string' at (x,y) using the font 'font' of size fontSize and color
 If align is undef or 0, the text will be left aligned at (x,y)
 If align is set to 1, the text will be centered at (x,y)
 If align is set to 2, the text will be right aligned at (x,y)
+calling 'drawText' in scalar context will return the width of  the printed Text.
 
 =head2 Lines and Curves
 
@@ -801,10 +806,11 @@ Reset both rotation and skewness to none.
 
 =head2 File Browsing
 
-=head3 addNewPage(pageNo)
+=head3 addNewPage(format,pageNo)
 
 Add a new page before the 'pageNo'th page (ex: addNewPage(1) will add at the beginnig, while addNewPage(3) will add between the second and third page)
 If pageNo is set to 0 or undef, it will add at the end.
+The following format are supported : '4A', '2A', 'A0', 'A1', 'A2', 'A3', 'A4', 'A5', 'A6', '4B', '2B', 'B0', 'B1', 'B2', 'B3', 'B4', 'B5', 'B6', 'LETTER', 'BROADSHEET', 'LEDGER', 'TABLOID', 'LEGAL', 'EXECUTIVE', and '36X36'. leaving it undefined will use the default 8 1/2* 11 format
 
 =head3 changePage(pageNo)
 
