@@ -7,7 +7,7 @@ use PDF::API2;
 
 use 5.008002;
 
-our $VERSION = '1.0.0.9';
+our $VERSION = '1.0.2.0';
 
 use constant PI => 4 * atan2(1, 1);
 
@@ -17,7 +17,7 @@ sub new{
     $self = bless($self, $class);
 
     my $PDF;
-    
+    $self->{'_page_images'} = [[]];
     if ($templateFile){
         $PDF = PDF::API2->open($templateFile);  
     }
@@ -29,6 +29,9 @@ sub new{
         
     }
 
+    $self->setMWCache({});
+    $self->setSWCache({});
+    $self->setFPCache({});
     $self->_setPDF($PDF);
     $self->setFilePath($filePath); # for retrieval when we'll want its content
                
@@ -58,10 +61,54 @@ sub getFilePath{
     return $self->{_file_path};
 }
 
+sub _setMWCache{
+    my ($self,$value) = @_;
+    $self->{_mw_cache} = $value;
+}
+
+sub _getMWCache{
+    my $self = shift;
+    return $self->{_mw_cache};
+}
+
+sub _setSWCache{
+    my ($self,$value) = @_;
+    $self->{_sw_cache} = $value;
+}
+
+sub _getSWCache{
+    my $self = shift;
+    return $self->{_sw_cache};
+}
+
+sub _setFPCache{
+    my ($self,$value) = @_;
+    $self->{_fp_cache} = $value;
+}
+
+sub _getFPCache{
+    my $self = shift;
+    return $self->{_fp_cache};
+}
+
 sub addNewPage{
     my ($self,$format,$pageNo) = @_;  
     $pageNo = 0 unless $pageNo;
     my $PDF = $self->getPDF();
+
+    my $pageImages = $self->{'_page_images'};
+
+    if ($pageNo == 0){
+        push(@$pageImages,[]);
+    }
+    elsif($pageNo == 1){
+        unshift(@$pageImages,[]);
+    }
+    else{
+        my @afterList = splice(@$pageImages,($pageNo-1));
+        push(@$pageImages, []);
+        push(@$pageImages,@afterList);
+    }
     
     throw Error::Simple('Page Number is invalid')
         if $pageNo > $PDF->pages ||
@@ -193,6 +240,8 @@ sub closeFile{
     my $PDF = $self->getPDF;
     my $filePath = $self->getFilePath;
     
+    $self->_drawImages;
+    
     $PDF->saveas($filePath);
     $PDF->end;
         
@@ -241,6 +290,43 @@ sub drawLine{
     $gfx->stroke;    
     
     $self->_resetTransformation($gfx,$x1,$y1);
+}
+
+sub drawDashedLine
+{
+    my ($self, $x1, $y1, $x2, $y2, $lineWidth, $on, $off, $strokecolor, $pageNo) = @_;
+    $pageNo = $self->_getCurPage unless $pageNo;
+
+    my $page = $self->_getPage($pageNo);
+    my $gfx = $page->gfx;
+
+    $self->_applyTransformation($gfx, $x1, $y1);
+    $gfx->strokecolor($strokecolor);
+    $gfx->linewidth($lineWidth);
+
+    my $linelength = sqrt(($x2-$x1)**2 + ($y2-$y1)**2);
+    my $dashes = ($linelength-$on)/($on+$off);
+    my $remainder = $dashes - int($dashes);
+    if ($remainder > 0.5) {
+        $dashes = int($dashes)+1;
+    } else {
+        $dashes = int($dashes);
+    }
+    return unless $dashes;
+
+    my $xon = ($x2 - $x1) / ($dashes + 1 + $dashes * $off / $on );
+    my $xonoff = $xon + $xon/$on*$off;
+
+    my $yon = ($y2 - $y1) / ($dashes + 1 + $dashes * $off / $on );
+    my $yonoff = $yon + $yon/$on*$off;
+
+    for my $i (0..($dashes-1)) {
+        $gfx->move($xonoff * $i, $yonoff * $i);
+        $gfx->line($xonoff * $i + $xon, $yonoff * $i + $yon);
+    }
+    $gfx->stroke;
+
+    $self->_resetTransformation($gfx, $x1, $y1);
 }
 
 sub drawCurve{ 
@@ -418,57 +504,57 @@ sub drawPie{
     $self->_resetTransformation($gfx,$x,$y);
 }
 
-sub drawPieChart{
-    my ($self,$x,$y,$r1,$r2,$values,$showString,$showValue,$pageNo) = @_;
-    $pageNo = $self->_getCurPage unless $pageNo; 
-    my $sum = 0;
-    
-    foreach my $value(@$values){
-        $sum += $value->{value};
-    }
-  
-    my $curValue = 0;
-    foreach my $value(@$values){
-        my $ratio = ($value->{value} / $sum) * 360;
-        
-        $self->drawPie($x,$y,$r1,$r2,$curValue,$curValue + $ratio,1,$value->{color},$value->{color},$pageNo);    
-        $curValue += $ratio;
-    }
-    
-    if ($showString || $showValue){
-        my $totalRad = 2 * PI();
-        my $rotation = $self->_getRotation();
-        $rotation = 0  unless $rotation;
-        my $page = $self->_getPage($pageNo);
-        my $gfx = $page->gfx;
-        $self->_applyTransformation($gfx,$x,$y);
-        
-        my $curRad = 0;
-        $gfx->fillcolor('black');
-        my $font = $self->_getFont('Times-Roman');
-        $gfx->font($font,15);
-        foreach my $value(@$values){ 
-            my $ratio = ($value->{value} / $sum) * $totalRad;
-            my $newX = ($r1 * (cos(($ratio/2) + $curRad))) * 1.07;
-            my $newY = ($r2 * (sin(($ratio/2) + $curRad))) * 1.07;
-            
-            my $align = 0;
-            $align = 2 if (($ratio/2) + $curRad) >= ($totalRad / 4) && 
-                          (($ratio/2) + $curRad) <= (3 * ($totalRad / 4));
-            my $string = $value->{string} if $showString && !$showValue;
-            $string = $value->{value} if !$showString && $showValue;
-            $string = $value->{string} . '(' . $value->{value}  . ')' if $showString && $showValue;
-# we use this instead of drawText so that we can rotate the text the right way.
-            $gfx->move($newX,$newY);       
-            $gfx->text($string)        if $align == 0;
-            $gfx->text_center($string) if $align == 1;
-            $gfx->text_right($string)  if $align == 2;           
- 
-            $curRad += $ratio;
-        }     
-        $self->_resetTransformation($gfx,$x,$y);
-    }   
-}
+# sub drawPieChart{
+#     my ($self,$x,$y,$r1,$r2,$values,$showString,$showValue,$pageNo) = @_;
+#     $pageNo = $self->_getCurPage unless $pageNo; 
+#     my $sum = 0;
+#     
+#     foreach my $value(@$values){
+#         $sum += $value->{value};
+#     }
+#   
+#     my $curValue = 0;
+#     foreach my $value(@$values){
+#         my $ratio = ($value->{value} / $sum) * 360;
+#         
+#         $self->drawPie($x,$y,$r1,$r2,$curValue,$curValue + $ratio,1,$value->{color},$value->{color},$pageNo);    
+#         $curValue += $ratio;
+#     }
+#     
+#     if ($showString || $showValue){
+#         my $totalRad = 2 * PI();
+#         my $rotation = $self->_getRotation();
+#         $rotation = 0  unless $rotation;
+#         my $page = $self->_getPage($pageNo);
+#         my $gfx = $page->gfx;
+#         $self->_applyTransformation($gfx,$x,$y);
+#         
+#         my $curRad = 0;
+#         $gfx->fillcolor('black');
+#         my $font = $self->_getFont('Times-Roman');
+#         $gfx->font($font,15);
+#         foreach my $value(@$values){ 
+#             my $ratio = ($value->{value} / $sum) * $totalRad;
+#             my $newX = ($r1 * (cos(($ratio/2) + $curRad))) * 1.07;
+#             my $newY = ($r2 * (sin(($ratio/2) + $curRad))) * 1.07;
+#             
+#             my $align = 0;
+#             $align = 2 if (($ratio/2) + $curRad) >= ($totalRad / 4) && 
+#                           (($ratio/2) + $curRad) <= (3 * ($totalRad / 4));
+#             my $string = $value->{string} if $showString && !$showValue;
+#             $string = $value->{value} if !$showString && $showValue;
+#             $string = $value->{string} . '(' . $value->{value}  . ')' if $showString && $showValue;
+# # we use this instead of drawText so that we can rotate the text the right way.
+#             $gfx->move($newX,$newY);       
+#             $gfx->text($string)        if $align == 0;
+#             $gfx->text_center($string) if $align == 1;
+#             $gfx->text_right($string)  if $align == 2;           
+#  
+#             $curRad += $ratio;
+#         }     
+#         $self->_resetTransformation($gfx,$x,$y);
+#     }   
+# }
 
 sub drawPolygon{
     my ($self,$points,$lineWidth,$strokecolor,$fillcolor,$pageNo) = @_;
@@ -513,10 +599,60 @@ sub _reformatPoints{
     return \@nPoints;
 }
 
+#INTERNAL FUNCTION, do not use outside scope
+sub _drawImages{
+    my $self = shift;
+    
+    my $pages = $self->{'_page_images'};
+    for (my $i = 0; $i < @$pages;$i++){
+        my $page = $pages->[$i];
+        $self->_drawImageForPage($page,$i);
+    }
+    
+}
+
+#INTERNAL FUNCTION, do not use outside scope
+sub _drawImageForPage{
+    my ($self,$pageImages,$pageNo) = @_;
+
+    $pageNo++; # because 0 is the first and not the last.
+
+    my $page = $self->_getPage($pageNo);
+    my $gfx  = $page->gfx;
+
+    foreach my $image(@$pageImages){
+        my $x        = $image->{'x'};
+        my $y        = $image->{'y'};
+        my $scale    = $image->{'scale'};
+        my $skew     = $image->{'skew'};
+        my $rotation = $image->{'rotation'};
+        my $h        = $image->{'h'};
+        my $mw       = $image->{'mw'};
+        my $mh       = $image->{'mh'};
+        my $obj      = $image->{'obj'};
+        
+        $self->_applyTransformation($gfx,$x + $mw,$y + $mh);
+    
+        unless ($h){
+            $gfx->image($obj, -$mw,-$mh,$scale);
+        }
+        else{
+            my $w = $scale;
+            $gfx->image($obj, -$mw,-$mh,$w,$h);
+        }
+    
+        $self->_resetTransformation($gfx,$x + $mw,$y + $mh);
+        
+    }
+
+}
+
 sub drawImage{
     my ($self,$imagePath,$x,$y,$scale,$h,$pageNo) = @_;
-    $pageNo = $self->_getCurPage unless $pageNo; 
     
+    $pageNo = $self->_getCurPage unless $pageNo;
+    
+    my $pageImages = $self->{'_page_images'}->[$pageNo-1];
     my $page = $self->_getPage($pageNo);
     my $gfx  = $page->gfx;
        
@@ -526,17 +662,16 @@ sub drawImage{
     
     my ($mw,$mh) = $self->_getCenterPointForImage($imgObj,$scale,$h);
 
-    $self->_applyTransformation($gfx,$x + $mw,$y + $mh);
-    
-    unless ($h){
-        $gfx->image($imgObj, -$mw,-$mh,$scale);
-    }
-    else{
-        my $w = $scale;
-        $gfx->image($imgObj, -$mw,-$mh,$w,$h);   
-    }
-    
-    $self->_resetTransformation($gfx,$x + $mw,$y + $mh);
+    push(@$pageImages,{'x'          => $x,
+                       'y'          => $y,
+                       'skew'       => $self->_getSkew,
+                       'rotation'   => $self->_getRotation,
+                       'scale'      => $scale,
+                       'h'          => $h,
+                       'mw'         => $mw,
+                       'mh'         => $mh,
+                       'obj'        => $imgObj});
+
 }
 
 #INTERNAL FUNCTION, do not use outside scope
@@ -606,6 +741,87 @@ sub drawText{
     }
 #     $self->_resetTransformation($gfx,$x,$y);
  
+}
+
+sub drawTextOrWidth
+{
+    my ($self,$drawing,$text,$font,$size,@more) = @_;
+    if ($drawing) {
+        return $self->drawText($text,$font,$size,@more);
+    } else {
+        return $self->getWidth($text,$font,$size);
+    }
+}
+
+sub drawTextOnlyIfFit{
+    my ($self,$text,$font,$fontSize,$x,$y,$color,$align,$pageNo);
+    $pageNo = $self->_getCurPage unless $pageNo; 
+    my $page    = $self->_getPage($pageNo);
+    
+    my $width = $self->getWidth($text,$font,$fontSize);
+    my ($llx,$lly,$urx,$ury) = $page->get_mediabox;
+    
+    return $self->drawText($font,$fontSize,$x,$y,$color,$align,$pageNo)
+        if $urx >= ($width + $x);
+    return 0; # could'n draw it because it's would get out of the page.
+    
+}
+
+sub getFontWidth
+{
+    my ($self,$text,$font,$size) = @_;
+    $size ||= 1;
+    my $fontObj = $self->_getFont($font);
+    return map { $_ * $size } $fontObj->width_array($text)
+        if wantarray;
+    return $fontObj->width($text) * $size;
+}
+
+sub getFontMaxWidth
+{
+    my ($self,$font,$size) = @_;
+    $size ||= 1;
+    my $mwCache = $self->_getMWCache;
+    return $mwCache->{$font}*$size if $mwCache->{$font};
+    
+    my $fontObj = $self->_getFont($font);
+    $mwCache->{$font} = $fontObj->maxwidth();
+    $self->_setMWCache($mwCache);
+    
+    return ($mwCache->{$font})*$size;
+}
+
+
+sub getFontSpaceWidth
+{
+    my ($self,$font,$size) = @_;
+    $size ||= 1;
+    my $swCache = $self->_getSWCache;
+    return $swCache->{$font}*$size if $swCache->{$font};
+    
+    my $fontObj = $self->_getFont($font);
+    $swCache->{$font} = $fontObj->width(' ');
+    $self->_setSWCache($swCache);
+    
+    return ($swCache->{$font})*$size;
+}
+
+sub getFontPosition
+{
+    my ($self,$font,$size) = @_;
+    $size ||= 1;
+    my $fpCache = $self->_getFPCache;
+    return $fpCache->{$font}*$size if $fpCache->{$font};
+    
+    my $fontObj = $self->_getFont($font);
+    my $a = $fontObj->ascender;
+    my $d = $fontObj->descender;
+    my $totalheight = $a - $d;
+    my $pos = $a/$totalheight;
+    $fpCache->{$font} = $pos;
+    $self->_setFPCache($fpCache);
+    
+    return $pos*$size;
 }
 
 sub importPage{
@@ -711,12 +927,51 @@ Draw the text 'string' at (x,y) using the font 'font' of size fontSize and color
 If align is undef or 0, the text will be left aligned at (x,y)
 If align is set to 1, the text will be centered at (x,y)
 If align is set to 2, the text will be right aligned at (x,y)
+calling 'drawText' in scalar context will return the width of the printed Text.
+
+=head3 drawTextOrWidth($drawing,$text,$font,$size,@more)
+
+If drawing is set to 1, return the width of 'text' given the 'font' and the 'size'.
+If drawing is set to 0, draw the text 'string' at (x,y) using the font 'font' of size fontSize and color 'color'.
+If align is undef or 0, the text will be left aligned at (x,y)
+If align is set to 1, the text will be centered at (x,y)
+If align is set to 2, the text will be right aligned at (x,y)
+
+=head3 drawTextOnlyIfFit($text,$font,$fontSize,$x,$y,$color,$align,$pageNo)
+
+Draw the text 'string' at (x,y) using the font 'font' of size fontSize and color 'color' only if the text will fit in the page. Otherwise, it will draw nothing. 
+If align is undef or 0, the text will be left aligned at (x,y)
+If align is set to 1, the text will be centered at (x,y)
+If align is set to 2, the text will be right aligned at (x,y)
+calling 'drawTextOnlyIfFit' in scalar context will return the width of the printed Text or 0 if it can't display it.
+
+=head2 Fonts Properties
+
+=head3 getFontWidth($text,$font,$size)
+
+Return the width of the 'text' given the 'font' and 'size' 
+
+=head3 getFontMaxWidth($font,$size)
+
+Return the maximum width for the given 'font' and 'size'. The maximum width is the width of the largest possible caracter of the font set. 
+
+=head3 getFontSpaceWidth($font,$size)
+
+Return the width of the whitespace caracter for the given 'font' and 'size'
+
+=head3 getFontPosition($font,$size)
+
+Return the relative y position for the given 'font' and 'size'
 
 =head2 Lines and Curves
 
 =head3 drawLine(x1,x2,y1,y2,lineWidth,strokecolor,pageNo)
 
 Draw a line at the specified coordinates from (x1,y1) to (x2,y2)
+
+=head3 drawDashedLine($x1, $y1, $x2, $y2, $lineWidth, $on, $off, $strokecolor, $pageNo)
+
+Draw a dashed line at the specified coodinates from (x1,y1) to (x2,y2). $on specifies the length of the 'on'(drawn) portions while $off the length of the 'off'(not drawn) portions.
 
 =head3 drawCurve(x1,y1,x2,y2,fx,fy,linewidth,strokecolor,pageNo)
 
@@ -817,9 +1072,10 @@ Change the current page to 'pageNo'. If set to 0 or undef, will go at the last p
 
 =head2 Others Functions
     
-=head3 Constructor: new(outPath,inPath)
+=head3 Constructor: new($outPath,$inFile,$firstPageFormat)
 
-Create the PDF::CreateSimple object. The file will be put at outPath. If inpath is defined, the new pdf will be a copy of inPath at start. If not defined, it will be a one page blank pdf file.
+Create the PDF::CreateSimple object. The file will be put at outPath. If inpath is defined, the new pdf will be a copy of inPath at start. If not defined, it will be a one page blank pdf file. $firstPageFormat define the format of the first page.
+The following format are supported : '4A', '2A', 'A0', 'A1', 'A2', 'A3', 'A4', 'A5', 'A6', '4B', '2B', 'B0', 'B1', 'B2', 'B3', 'B4', 'B5', 'B6', 'LETTER', 'BROADSHEET', 'LEDGER', 'TABLOID', 'LEGAL', 'EXECUTIVE', and '36X36'. leaving it undefined will use the default 8 1/2* 11 format
 
 =head3 getPDF
 
